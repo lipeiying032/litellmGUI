@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LiteLLM Gateway Configuration
+# AI Gateway Hub — https://github.com/your-org/ai-gateway-hub
+# ─────────────────────────────────────────────────────────────────────────────
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+  # NOTE: store_model_in_db is intentionally disabled.
+  # LiteLLM >= 1.x requires PostgreSQL for this feature; SQLite is NOT supported.
+  # AI Gateway Hub's own backend (Node.js + SQLite) persists model configs and
+  # re-registers them with LiteLLM on startup via POST /model/new.
+  # store_model_in_db: true   ← requires postgres, keep commented out
+
+  # Allow adding models at runtime via API
+  allow_model_access_groups_on_request: true
+
+  # UI settings
+  ui_access_mode: "all"
+
+litellm_settings:
+  # Drop unsupported parameters instead of raising errors
+  drop_params: true
+  # Return original response on errors
+  set_verbose: false
+  # Request timeout in seconds
+  request_timeout: 120
+  # Retry configuration
+  num_retries: 2
+  # BUG FIX: max_budget: 0 was blocking all paid requests (means $0 budget).
+  # Remove this line or set to a positive value to allow requests through.
+
+router_settings:
+  routing_strategy: "usage-based-routing"
+  num_retries: 2
+  timeout: 120
+  retry_after: 5
+
+# ─── Pre-configured model examples (users can add more via the UI) ───────────
+model_list:
+  # ── Example: Ollama local models (no API key needed) ──────────────────────
+  - model_name: ollama/llama3
+    litellm_params:
+      model: ollama/llama3
+      api_base: "http://host.docker.internal:11434"
+    model_info:
+      description: "Llama 3 via local Ollama (no API key required)"
+      supports_function_calling: true
+
+  # ── Example: OpenAI-compatible custom endpoint ────────────────────────────
+  - model_name: custom/my-openai-compatible
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_base: "https://your-custom-endpoint.example.com/v1"
+      api_key: "optional-key-or-empty"
+    model_info:
+      description: "Custom OpenAI-compatible endpoint example"
+      supports_function_calling: true
+
+proxy_server_settings:
+  # Callbacks for logging (optional)
+  # callbacks: ["langfuse"]

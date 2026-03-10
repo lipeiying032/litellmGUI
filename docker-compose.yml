@@ -1,0 +1,102 @@
+version: "3.9"
+
+services:
+  # ─── LiteLLM Proxy Gateway ───────────────────────────────────────────────
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: ai_gateway_litellm
+    restart: unless-stopped
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+      - litellm_data:/app/data
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-gateway-master-key}
+      # NOTE: STORE_MODEL_IN_DB requires PostgreSQL (not SQLite) in LiteLLM >= 1.x.
+      # We omit it here — our backend manages model persistence via SQLite and
+      # re-registers models with LiteLLM on startup via the /model/new API.
+      - PORT=4000
+    command: >
+      --config /app/config.yaml
+      --port 4000
+      --num_workers 4
+      --detailed_debug
+    healthcheck:
+      # BUG FIX: LiteLLM image has no curl (GitHub issue #9295). Use wget + /health/liveliness.
+      test: ["CMD-SHELL", "wget --quiet --tries=1 -O /dev/null http://localhost:4000/health/liveliness || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - gateway_net
+
+  # ─── Backend API ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai_gateway_backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - LITELLM_BASE_URL=http://litellm:4000
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-gateway-master-key}
+      - DB_PATH=/app/data/gateway.db
+      - JWT_SECRET=${JWT_SECRET:-super-secret-jwt-key-change-in-production}
+      - GATEWAY_PUBLIC_URL=${GATEWAY_PUBLIC_URL:-http://localhost}
+    volumes:
+      - backend_data:/app/data
+    depends_on:
+      litellm:
+        condition: service_healthy
+    networks:
+      - gateway_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  # ─── Frontend ─────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE=/api
+        - VITE_APP_NAME=AI Gateway Hub
+    container_name: ai_gateway_frontend
+    restart: unless-stopped
+    networks:
+      - gateway_net
+    depends_on:
+      - backend
+
+  # ─── Nginx Reverse Proxy ──────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: ai_gateway_nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # To enable HTTPS: add certs to nginx/ssl/ and uncomment below + add SSL server block to nginx.conf
+      # - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - frontend
+      - backend
+      - litellm
+    networks:
+      - gateway_net
+
+volumes:
+  litellm_data:
+  backend_data:
+  nginx_logs:
+
+networks:
+  gateway_net:
+    driver: bridge
