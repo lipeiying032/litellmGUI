@@ -41,7 +41,40 @@ async function registerModel(model) {
   logger.info("Registering model with LiteLLM", { modelName: model.name });
 
   const response = await client.post("/model/new", payload);
-  const litellmId = response.data?.model_info?.id || response.data?.id || model.id;
+
+  // BUG FIX #7: Previously fell back to `model.id` (our own UUID) when LiteLLM
+  // did not return a model ID in the response. This caused a subtle "ghost model"
+  // bug:
+  //   1. Our DB stored our own UUID as `litellm_id`.
+  //   2. On delete, deregisterModel() sent that UUID to LiteLLM's /model/delete.
+  //   3. LiteLLM couldn't find it, logged a 404, we silently swallowed the error.
+  //   4. The model was removed from our DB but remained live in LiteLLM's memory,
+  //      still accepting requests under the alias indefinitely.
+  //
+  // Fix: extract the ID from the documented response paths, emit a clear warning
+  // if neither is present (so operators can detect the regression immediately),
+  // and only then fall back to our own UUID as a last resort. The fallback is
+  // retained to avoid breaking the creation flow — callers still get a record —
+  // but the warning makes the deregistration risk visible in the logs.
+  const litellmId =
+    response.data?.model_info?.id ||
+    response.data?.id ||
+    null;
+
+  if (!litellmId) {
+    logger.warn(
+      "LiteLLM did not return a model ID in /model/new response. " +
+      "Falling back to internal UUID as litellm_id. " +
+      "Deregistration (DELETE) for this model may silently fail — " +
+      "the model could remain active in LiteLLM after being removed from the DB. " +
+      "Check the LiteLLM version or /model/new response shape.",
+      { modelName: model.name, responseData: response.data }
+    );
+    // Fall back to our own ID so the creation flow doesn't break, but the
+    // warning above gives operators the signal they need to investigate.
+    return model.id;
+  }
+
   logger.info("Model registered in LiteLLM", { modelName: model.name, litellmId });
   return litellmId;
 }
@@ -50,18 +83,22 @@ async function registerModel(model) {
  * Remove a model from LiteLLM.
  * @param {string} litellmId  - LiteLLM's model ID (returned from registerModel)
  *
- * NOTE (Bug #13): The /model/delete request body field name has varied across
- * LiteLLM versions. Current versions expect { id: litellmId }.
+ * NOTE: The /model/delete request body field name has varied across LiteLLM
+ * versions. Current versions (>= v1.x) expect { id: litellmId }.
+ * We also send { model_id: litellmId } as a forward-compatibility hedge — older
+ * versions that used "model_id" will pick it up, newer versions ignore extra keys.
  * If deletion silently fails after a LiteLLM upgrade, verify the field name
  * against the running version's Swagger at http://<litellm-host>:4000/docs.
  */
 async function deregisterModel(litellmId) {
   if (!litellmId) return;
   try {
-    await client.post("/model/delete", { id: litellmId });
+    await client.post("/model/delete", { id: litellmId, model_id: litellmId });
     logger.info("Model deregistered from LiteLLM", { litellmId });
   } catch (err) {
-    // Model may not exist in LiteLLM (e.g. was never synced) — ignore
+    // Model may not exist in LiteLLM (e.g. was never synced, or litellmId is
+    // our own UUID fallback from Bug Fix #7) — log at warn level so the
+    // operator is aware but the delete flow is not blocked.
     logger.warn("Could not deregister model from LiteLLM", {
       litellmId,
       error: err.message,
@@ -88,14 +125,13 @@ async function updateModel(oldLitellmId, model) {
 /**
  * Check LiteLLM liveness.
  *
- * BUG FIX #2: Was using GET /health which checks all registered model upstreams.
- * If any upstream is unreachable, /health returns an error even though LiteLLM
- * itself is running fine — causing syncModelsToLitellmWithRetry() to keep
- * retrying unnecessarily and eventually give up.
- *
- * /health/liveliness only checks that the LiteLLM process is alive, which is
- * the correct signal for "is LiteLLM ready to accept /model/new requests?".
- * This matches what docker-compose.yml uses for the container healthcheck.
+ * Uses /health/liveliness instead of /health:
+ * - /health checks all registered model upstreams. If any upstream is
+ *   unreachable, it returns an error even though LiteLLM itself is running,
+ *   causing syncModelsToLitellmWithRetry() to retry unnecessarily and give up.
+ * - /health/liveliness only checks that the LiteLLM process is alive, which
+ *   is the correct signal for "is LiteLLM ready to accept /model/new requests?".
+ *   This also matches the docker-compose.yml container healthcheck endpoint.
  */
 async function healthCheck() {
   const response = await client.get("/health/liveliness");
@@ -142,8 +178,8 @@ function buildLitellmParams(model) {
     model: model.litellmModel,
   };
 
-  if (model.apiBase || model._apiBase) {
-    params.api_base = model.apiBase || model._apiBase;
+  if (model.apiBase) {
+    params.api_base = model.apiBase;
   }
 
   // Only include api_key if provided and non-empty
