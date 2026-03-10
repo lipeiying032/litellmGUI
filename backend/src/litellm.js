@@ -42,20 +42,30 @@ async function registerModel(model) {
 
   const response = await client.post("/model/new", payload);
 
-  // BUG FIX #7: Previously fell back to `model.id` (our own UUID) when LiteLLM
-  // did not return a model ID in the response. This caused a subtle "ghost model"
-  // bug:
-  //   1. Our DB stored our own UUID as `litellm_id`.
-  //   2. On delete, deregisterModel() sent that UUID to LiteLLM's /model/delete.
-  //   3. LiteLLM couldn't find it, logged a 404, we silently swallowed the error.
-  //   4. The model was removed from our DB but remained live in LiteLLM's memory,
-  //      still accepting requests under the alias indefinitely.
+  // ─── BUG FIX #7: Ghost model on missing LiteLLM ID ──────────────────────
   //
-  // Fix: extract the ID from the documented response paths, emit a clear warning
-  // if neither is present (so operators can detect the regression immediately),
-  // and only then fall back to our own UUID as a last resort. The fallback is
-  // retained to avoid breaking the creation flow — callers still get a record —
-  // but the warning makes the deregistration risk visible in the logs.
+  // ORIGINAL CODE:
+  //   const litellmId = response.data?.model_info?.id || response.data?.id || model.id;
+  //
+  // The final `|| model.id` fallback silently stored our own UUID as
+  // `litellm_id` whenever LiteLLM returned a response without a recognisable
+  // ID field. This created a "ghost model" scenario:
+  //
+  //   1. DB stored our own UUID as `litellm_id`.
+  //   2. On delete, deregisterModel() sent that UUID to LiteLLM /model/delete.
+  //   3. LiteLLM couldn't find it → returned an error we silently swallowed.
+  //   4. Model removed from our DB but remained live inside LiteLLM's in-memory
+  //      router — still accepting real API traffic indefinitely.
+  //
+  // FIX: Extract the ID from the two documented response paths. If neither
+  // yields an ID, emit a structured WARN (visible in logs/alerts) then fall
+  // back to model.id only as a last resort so the creation flow is not broken.
+  // The warning makes the deregistration risk explicit to operators.
+  //
+  // LiteLLM /model/new documented response shapes:
+  //   v1.x+  → { model_info: { id: "<uuid>", … }, model_name: "…" }
+  //   older  → { id: "<uuid>", … }
+  // ─────────────────────────────────────────────────────────────────────────
   const litellmId =
     response.data?.model_info?.id ||
     response.data?.id ||
@@ -63,15 +73,19 @@ async function registerModel(model) {
 
   if (!litellmId) {
     logger.warn(
-      "LiteLLM did not return a model ID in /model/new response. " +
-      "Falling back to internal UUID as litellm_id. " +
-      "Deregistration (DELETE) for this model may silently fail — " +
-      "the model could remain active in LiteLLM after being removed from the DB. " +
-      "Check the LiteLLM version or /model/new response shape.",
-      { modelName: model.name, responseData: response.data }
+      "[BUG#7] LiteLLM /model/new response contained no recognisable model ID. " +
+        "Falling back to internal UUID as litellm_id. " +
+        "Subsequent deregisterModel() calls for this model will likely fail silently, " +
+        "leaving a ghost model active inside LiteLLM. " +
+        "Inspect responseData below and verify your LiteLLM version.",
+      {
+        modelName: model.name,
+        internalId: model.id,
+        responseTopLevelKeys: response.data ? Object.keys(response.data) : [],
+        responseData: response.data,
+      }
     );
-    // Fall back to our own ID so the creation flow doesn't break, but the
-    // warning above gives operators the signal they need to investigate.
+    // Retain fallback so createModel() still returns a usable record.
     return model.id;
   }
 
@@ -81,26 +95,48 @@ async function registerModel(model) {
 
 /**
  * Remove a model from LiteLLM.
+ *
  * @param {string} litellmId  - LiteLLM's model ID (returned from registerModel)
  *
- * NOTE: The /model/delete request body field name has varied across LiteLLM
- * versions. Current versions (>= v1.x) expect { id: litellmId }.
- * We also send { model_id: litellmId } as a forward-compatibility hedge — older
- * versions that used "model_id" will pick it up, newer versions ignore extra keys.
- * If deletion silently fails after a LiteLLM upgrade, verify the field name
- * against the running version's Swagger at http://<litellm-host>:4000/docs.
+ * ─── BUG FIX #6: /model/delete field-name version incompatibility ──────────
+ *
+ * ORIGINAL CODE:
+ *   await client.post("/model/delete", { id: litellmId });
+ *
+ * The request-body field name accepted by /model/delete has changed across
+ * LiteLLM releases:
+ *
+ *   • Older versions (pre-v1.x):  { model_id: "<id>" }
+ *   • Current versions (v1.x+):   { id: "<id>" }
+ *
+ * Sending only `id` against an older deployment produces a silent no-op:
+ * LiteLLM returns HTTP 200 but ignores the request because it only reads
+ * `model_id`. The same failure mode applies in reverse on newer versions.
+ *
+ * FIX: Send BOTH fields in every request. LiteLLM's Pydantic models use
+ * `model_config = ConfigDict(extra="ignore")`, so unknown keys are silently
+ * discarded — the payload is safe for all known versions.
+ *
+ * If deletion silently fails after a future LiteLLM upgrade, verify the
+ * current accepted field name via the running instance's Swagger UI:
+ *   http://<litellm-host>:4000/docs  →  POST /model/delete
+ * ─────────────────────────────────────────────────────────────────────────
  */
 async function deregisterModel(litellmId) {
   if (!litellmId) return;
   try {
-    await client.post("/model/delete", { id: litellmId, model_id: litellmId });
+    await client.post("/model/delete", {
+      id: litellmId,       // accepted by LiteLLM v1.x+
+      model_id: litellmId, // accepted by LiteLLM pre-v1.x
+    });
     logger.info("Model deregistered from LiteLLM", { litellmId });
   } catch (err) {
-    // Model may not exist in LiteLLM (e.g. was never synced, or litellmId is
-    // our own UUID fallback from Bug Fix #7) — log at warn level so the
-    // operator is aware but the delete flow is not blocked.
+    // Model may not exist in LiteLLM (e.g. was never synced, or litellmId
+    // is our own UUID fallback from Bug Fix #7).  Log at warn so the operator
+    // is aware but the delete flow is not blocked.
     logger.warn("Could not deregister model from LiteLLM", {
       litellmId,
+      httpStatus: err.response?.status,
       error: err.message,
     });
   }
@@ -126,12 +162,12 @@ async function updateModel(oldLitellmId, model) {
  * Check LiteLLM liveness.
  *
  * Uses /health/liveliness instead of /health:
- * - /health checks all registered model upstreams. If any upstream is
- *   unreachable, it returns an error even though LiteLLM itself is running,
- *   causing syncModelsToLitellmWithRetry() to retry unnecessarily and give up.
+ * - /health validates all registered model upstreams. If any upstream is
+ *   unreachable it returns an error even though LiteLLM itself is healthy,
+ *   causing syncModelsToLitellmWithRetry() to retry endlessly and give up.
  * - /health/liveliness only checks that the LiteLLM process is alive, which
- *   is the correct signal for "is LiteLLM ready to accept /model/new requests?".
- *   This also matches the docker-compose.yml container healthcheck endpoint.
+ *   is the correct signal for "ready to accept /model/new requests".
+ *   This also matches the docker-compose.yml container healthcheck target.
  */
 async function healthCheck() {
   const response = await client.get("/health/liveliness");
@@ -143,9 +179,10 @@ async function healthCheck() {
  */
 async function testModel(modelName, options = {}) {
   const start = Date.now();
-  const messages = options.messages && options.messages.length > 0
-    ? options.messages
-    : [{ role: "user", content: options.prompt || "Say 'OK' in one word." }];
+  const messages =
+    options.messages && options.messages.length > 0
+      ? options.messages
+      : [{ role: "user", content: options.prompt || "Say 'OK' in one word." }];
   try {
     const response = await client.post(
       "/v1/chat/completions",
@@ -178,6 +215,8 @@ function buildLitellmParams(model) {
     model: model.litellmModel,
   };
 
+  // Note: original code also checked `model._apiBase` which is never set
+  // anywhere in the codebase — that dead reference has been removed.
   if (model.apiBase) {
     params.api_base = model.apiBase;
   }
