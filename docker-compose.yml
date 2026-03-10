@@ -3,7 +3,19 @@ version: "3.9"
 services:
   # ─── LiteLLM Proxy Gateway ───────────────────────────────────────────────
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    # BUG FIX #12: Was "main-latest" which points to the HEAD of the main branch
+    # and pulls in breaking changes on every `docker compose pull`. LiteLLM ships
+    # multiple commits per day; /model/delete field names, config.yaml keys, and
+    # routing behaviour have all changed between minor versions without notice.
+    #
+    # "main-stable" is the LiteLLM-maintained tag that always points to the
+    # latest release that has passed their 12-hour load-test suite. It is still
+    # a moving target, so for production deployments pin to a specific version:
+    #   ghcr.io/berriai/litellm:main-v1.81.14-stable
+    #
+    # To upgrade: review the release notes at https://docs.litellm.ai/release_notes
+    # then bump the version below and redeploy.
+    image: ghcr.io/berriai/litellm:main-v1.81.14-stable
     container_name: ai_gateway_litellm
     restart: unless-stopped
     volumes:
@@ -15,9 +27,9 @@ services:
       # We omit it here — our backend manages model persistence via SQLite and
       # re-registers models with LiteLLM on startup via the /model/new API.
       - PORT=4000
-    # BUG FIX #6: Removed --detailed_debug flag. It dumps every internal
-    # processing step (including per-token details) to stdout, which causes
-    # massive log volume and container slowdown in production.
+    # NOTE: --detailed_debug flag is intentionally omitted.
+    # It dumps every internal processing step (including per-token details) to
+    # stdout, causing massive log volume and container slowdown in production.
     # Use --debug only during active troubleshooting; omit it normally.
     command: >
       --config /app/config.yaml
