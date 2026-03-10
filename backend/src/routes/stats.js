@@ -9,8 +9,11 @@ const { logger } = require("../logger");
 /**
  * GET /api/stats
  * Dashboard statistics.
+ *
+ * BUG FIX #1: Was router.get("/") which only matched GET /api/ (the bare mount path).
+ * Frontend calls GET /api/stats — this route was never reached, always 404.
  */
-router.get("/", (req, res) => {
+router.get("/stats", (req, res) => {
   try {
     const stats = db.getStats();
     res.json({ success: true, data: stats });

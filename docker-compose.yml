@@ -15,13 +15,16 @@ services:
       # We omit it here — our backend manages model persistence via SQLite and
       # re-registers models with LiteLLM on startup via the /model/new API.
       - PORT=4000
+    # BUG FIX #6: Removed --detailed_debug flag. It dumps every internal
+    # processing step (including per-token details) to stdout, which causes
+    # massive log volume and container slowdown in production.
+    # Use --debug only during active troubleshooting; omit it normally.
     command: >
       --config /app/config.yaml
       --port 4000
       --num_workers 4
-      --detailed_debug
     healthcheck:
-      # BUG FIX: LiteLLM image has no curl (GitHub issue #9295). Use wget + /health/liveliness.
+      # LiteLLM image has no curl (GitHub issue #9295). Use wget + /health/liveliness.
       test: ["CMD-SHELL", "wget --quiet --tries=1 -O /dev/null http://localhost:4000/health/liveliness || exit 1"]
       interval: 30s
       timeout: 10s

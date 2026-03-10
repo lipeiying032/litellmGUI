@@ -15,8 +15,9 @@ general_settings:
   # Allow adding models at runtime via API
   allow_model_access_groups_on_request: true
 
-  # UI settings
-  ui_access_mode: "all"
+  # BUG FIX #10: Removed ui_access_mode — LiteLLM's built-in UI requires
+  # a PostgreSQL database (database_url). Without it, this setting is ignored
+  # and would mislead operators into expecting a working LiteLLM UI.
 
 litellm_settings:
   # Drop unsupported parameters instead of raising errors
@@ -27,11 +28,18 @@ litellm_settings:
   request_timeout: 120
   # Retry configuration
   num_retries: 2
-  # BUG FIX: max_budget: 0 was blocking all paid requests (means $0 budget).
-  # Remove this line or set to a positive value to allow requests through.
+  # BUG FIX (original): max_budget: 0 was removed — it blocked all paid requests.
+  # BUG FIX #4: Removed proxy_server_settings block — it is not a valid top-level
+  # LiteLLM config key and was silently ignored. Callbacks belong under litellm_settings:
+  #   success_callback: ["langfuse"]
+  #   failure_callback: ["langfuse"]
 
 router_settings:
-  routing_strategy: "usage-based-routing"
+  # BUG FIX #3: "usage-based-routing" requires a Redis backend for cross-process
+  # TPM/RPM tracking. This project has no Redis service in docker-compose.yml,
+  # so every request would attempt (and fail) a Redis connection, adding latency.
+  # "simple-shuffle" is the correct default for a single-instance deployment.
+  routing_strategy: "simple-shuffle"
   num_retries: 2
   timeout: 120
   retry_after: 5
@@ -56,7 +64,3 @@ model_list:
     model_info:
       description: "Custom OpenAI-compatible endpoint example"
       supports_function_calling: true
-
-proxy_server_settings:
-  # Callbacks for logging (optional)
-  # callbacks: ["langfuse"]

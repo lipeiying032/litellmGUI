@@ -3,6 +3,11 @@ import { Copy, Check, ExternalLink } from "lucide-react";
 
 export default function DocsView() {
   const [copied, setCopied] = useState(null);
+  const [active, setActive] = useState("overview");
+  // BUG FIX #7: Removed unused `codeTab` / `setCodeTab` state that was
+  // declared but never referenced in JSX, creating dead React state on every
+  // render and confusing future developers.
+
   const BASE = window.location.origin;
 
   const copy = (text, key) => {
@@ -202,9 +207,6 @@ print(response.choices[0].message.content)`,
       ),
     },
   ];
-
-  const [active, setActive] = useState("overview");
-  const [codeTab, setCodeTab] = useState("curl"); // BUG FIX: removed unused `lang` state
 
   return (
     <div className="animate-fade-in">

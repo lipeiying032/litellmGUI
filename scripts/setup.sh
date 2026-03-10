@@ -18,20 +18,20 @@ err()    { echo -e "  ${RED}✗${RESET} $1"; exit 1; }
 
 echo -e "${BOLD}${GREEN}"
 cat <<'EOF'
-   _   _____   _____       _                           _   _       _     
-  /_\ |_   _| |  __ \     | |                         | | | |     | |    
- / _ \  | |   | |  \/ __ _| |_ _____      ____ _ _   _| |_| |_   _| |__  
-/ ___ \ | |   | | __ / _` | __/ _ \ \ /\ / / _` | | | |  _  | | | | '_ \ 
+   _   _____   _____       _                           _   _       _
+  /_\ |_   _| |  __ \     | |                         | | | |     | |
+ / _ \  | |   | |  \/ __ _| |_ _____      ____ _ _   _| |_| |_   _| |__
+/ ___ \ | |   | | __ / _` | __/ _ \ \ /\ / / _` | | | |  _  | | | | '_ \
 \/_/\_\|_|   | |_\ \ (_| | ||  __/\ V  V / (_| | |_| | | | | |_| | |_) |
-             \____/\__,_|\__\___| \_/\_/ \__,_|\__, \_| |_/\__,_|_.__/ 
-                                                __/ |                    
-                                               |___/                     
+             \____/\__,_|\__\___| \_/\_/ \__,_|\__, \_| |_/\__,_|_.__/
+                                                __/ |
+                                               |___/
 EOF
 echo -e "${RESET}"
 
 header "Checking prerequisites"
 command -v docker   &>/dev/null || err "Docker is not installed. https://docs.docker.com/get-docker/"
-command -v docker   compose version &>/dev/null 2>&1 || \
+docker compose version &>/dev/null 2>&1 || \
   docker-compose version &>/dev/null 2>&1 || err "Docker Compose is not installed."
 ok "Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 ok "Docker Compose available"
@@ -39,9 +39,20 @@ ok "Docker Compose available"
 header "Setting up environment"
 if [ ! -f .env ]; then
   cp .env.example .env
-  # Generate random secrets
-  MASTER_KEY="sk-gateway-$(openssl rand -hex 16 2>/dev/null || cat /dev/urandom | head -c 16 | xxd -p)"
-  JWT_SECRET="$(openssl rand -hex 32 2>/dev/null || cat /dev/urandom | head -c 32 | xxd -p)"
+
+  # BUG FIX #11: The original fallback used `xxd` which is not present in many
+  # minimal Linux images (Alpine, BusyBox-based). Replaced with `od` which is
+  # POSIX-standard and universally available. The `openssl rand -hex` path is
+  # still the primary method; `od` is only the fallback.
+  gen_hex() {
+    local bytes=$1
+    openssl rand -hex "$bytes" 2>/dev/null || \
+      od -An -N"$bytes" -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'
+  }
+
+  MASTER_KEY="sk-gateway-$(gen_hex 16)"
+  JWT_SECRET="$(gen_hex 32)"
+
   sed -i.bak "s/sk-gateway-master-key-change-me/${MASTER_KEY}/" .env
   sed -i.bak "s/super-secret-jwt-key-change-in-production/${JWT_SECRET}/" .env
   rm -f .env.bak
@@ -79,8 +90,8 @@ echo ""
 echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════${RESET}"
 echo -e "${BOLD}  🚀 AI Gateway Hub is running!${RESET}"
 echo ""
-echo -e "  ${CYAN}Web UI:${RESET}      http://localhost"
-echo -e "  ${CYAN}API Endpoint:${RESET} http://localhost/v1"
+echo -e "  ${CYAN}Web UI:${RESET}         http://localhost"
+echo -e "  ${CYAN}API Endpoint:${RESET}   http://localhost/v1"
 echo -e "  ${CYAN}Management API:${RESET} http://localhost/api"
 echo ""
 echo -e "  ${YELLOW}Next steps:${RESET}"

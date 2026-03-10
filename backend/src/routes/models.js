@@ -13,14 +13,20 @@ const GATEWAY_PUBLIC_URL =
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
+/**
+ * Build the OpenAI-compatible model alias (the `model` field callers use).
+ *
+ * BUG NOTE #9: Aliases may contain forward slashes (e.g.
+ * "anthropic/claude-3-5-sonnet-20241022"). This is intentional and safe for
+ * our management API because all model lookups use the UUID `id`, not the
+ * `name` slug, as the :id URL parameter. Avoid adding routes that look up
+ * models by name via URL params — the slash would be mis-parsed by Express.
+ */
 function buildModelAlias(provider, litellmModel) {
-  // Avoid double-prefix: if litellmModel already starts with "provider/", use it directly.
-  // e.g. provider="anthropic", model="anthropic/claude-3-5-sonnet" → "anthropic/claude-3-5-sonnet"
-  //      provider="myorg",      model="anthropic/claude-3-5-sonnet" → "myorg/anthropic/claude-3-5-sonnet"
   const base = litellmModel.startsWith(`${provider}/`) ? litellmModel : `${provider}/${litellmModel}`;
   const slug = base
     .toLowerCase()
-    .replace(/[^a-z0-9\-_./]/g, "-")   // keep slashes so provider/model stays readable
+    .replace(/[^a-z0-9\-_./]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
   return slug;
@@ -65,16 +71,11 @@ print(response.choices[0].message.content)`;
 
 /**
  * GET /api/models
- * List all registered models.
  */
 router.get("/", (req, res) => {
   try {
     const models = db.listModels();
-    res.json({
-      success: true,
-      data: models.map(modelResponse),
-      count: models.length,
-    });
+    res.json({ success: true, data: models.map(modelResponse), count: models.length });
   } catch (err) {
     logger.error("Failed to list models", { error: err.message });
     res.status(500).json({ success: false, error: "Failed to fetch models" });
@@ -83,7 +84,6 @@ router.get("/", (req, res) => {
 
 /**
  * GET /api/models/:id
- * Get a single model.
  */
 router.get("/:id", (req, res) => {
   try {
@@ -98,16 +98,6 @@ router.get("/:id", (req, res) => {
 /**
  * POST /api/models
  * Register a new model.
- *
- * Body:
- *   displayName   string  – Human-readable name (e.g. "My Claude Proxy")
- *   provider      string  – Provider label (e.g. "anthropic", "openai", "ollama")
- *   litellmModel  string  – LiteLLM model identifier (e.g. "anthropic/claude-3-opus-20240229")
- *   apiBase       string? – Custom API base URL (optional)
- *   apiKey        string? – API key (optional – for keyless providers leave empty)
- *   description   string? – Human-readable description
- *   tags          string[]? – Tags for filtering
- *   modelType     string? – "chat" | "completion" | "embedding" | "image" | "audio"
  */
 router.post("/", async (req, res) => {
   const {
@@ -121,7 +111,6 @@ router.post("/", async (req, res) => {
     modelType = "chat",
   } = req.body;
 
-  // Validation
   if (!displayName || !provider || !litellmModel) {
     return res.status(400).json({
       success: false,
@@ -132,7 +121,6 @@ router.post("/", async (req, res) => {
   const id = uuidv4();
   const name = buildModelAlias(provider, litellmModel);
 
-  // Check for duplicate alias
   if (db.getModelByName(name)) {
     return res.status(409).json({
       success: false,
@@ -147,7 +135,7 @@ router.post("/", async (req, res) => {
     provider,
     litellmModel,
     apiBase: apiBase || null,
-    apiKey: apiKey || null,       // BUG FIX: was _apiKey — serializeModel reads m.apiKey, not m._apiKey
+    apiKey: apiKey || null,
     description: description || null,
     tags,
     modelType,
@@ -156,12 +144,9 @@ router.post("/", async (req, res) => {
   };
 
   try {
-    // Persist to DB first
     db.createModel(modelRecord);
 
-    // Register with LiteLLM asynchronously
     try {
-      // Pass _apiKey explicitly so buildLitellmParams can access the raw key
       const litellmId = await litellm.registerModel({ ...modelRecord, _apiKey: modelRecord.apiKey });
       db.updateModel(id, { litellmId });
       modelRecord.litellmId = litellmId;
@@ -204,9 +189,19 @@ router.patch("/:id", async (req, res) => {
     if (updates.apiKey !== undefined || updates.apiBase !== undefined) {
       try {
         const updated = db.getModel(req.params.id);
+
+        // BUG FIX #8: Was `updates.apiKey || existing._apiKey` which treated
+        // apiKey="" (intentional clear) as falsy and fell back to the old key,
+        // so LiteLLM would still use the stale key even though DB was cleared.
+        // Now: if apiKey was explicitly sent (even as ""), honour it; only fall
+        // back to the existing key when apiKey was NOT part of this PATCH.
+        const rawKey = updates.apiKey !== undefined
+          ? (updates.apiKey || null)   // "" → null (clear the key in LiteLLM)
+          : existing._apiKey;
+
         const newLitellmId = await litellm.updateModel(existing.litellmId, {
           ...updated,
-          _apiKey: updates.apiKey || existing._apiKey,
+          _apiKey: rawKey,
         });
         db.updateModel(req.params.id, { litellmId: newLitellmId });
       } catch (litellmErr) {
@@ -223,14 +218,12 @@ router.patch("/:id", async (req, res) => {
 
 /**
  * DELETE /api/models/:id
- * Remove a model.
  */
 router.delete("/:id", async (req, res) => {
   try {
     const model = db.getModel(req.params.id);
     if (!model) return res.status(404).json({ success: false, error: "Model not found" });
 
-    // Deregister from LiteLLM
     if (model.litellmId) {
       await litellm.deregisterModel(model.litellmId);
     }
@@ -245,20 +238,17 @@ router.delete("/:id", async (req, res) => {
 
 /**
  * POST /api/models/:id/test
- * Send a test request through LiteLLM for this model.
  */
 router.post("/:id/test", async (req, res) => {
   try {
     const model = db.getModel(req.params.id);
     if (!model) return res.status(404).json({ success: false, error: "Model not found" });
 
-    // BUG FIX: Accept full messages array from TestPanel (not just a single prompt string)
     const result = await litellm.testModel(model.name, {
       prompt: req.body.prompt,
       messages: req.body.messages,
     });
 
-    // Log usage
     db.logUsage({
       modelId: model.id,
       modelName: model.name,
@@ -277,7 +267,6 @@ router.post("/:id/test", async (req, res) => {
 
 /**
  * POST /api/models/:id/toggle
- * Enable or disable a model.
  */
 router.post("/:id/toggle", (req, res) => {
   try {

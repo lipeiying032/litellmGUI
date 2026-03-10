@@ -68,6 +68,37 @@ function migrate(db) {
   upsertSetting.run("require_auth", "false");
 }
 
+// ─── Field mapping ─────────────────────────────────────────────────────────
+//
+// BUG FIX #5: Replace the fragile inline ternary chain with a single
+// declarative map.  Every camelCase JS key maps to its snake_case SQL column.
+// Adding a new field only requires one entry here — not edits spread across
+// multiple places.
+//
+// Convention: if a JS key IS the same as its SQL column, it can be omitted
+// (the fallback at the end of jsToCol() handles it), but explicit entries are
+// preferred for clarity.
+//
+const JS_TO_COL = {
+  displayName: "display_name",
+  litellmModel: "litellm_model",
+  apiBase: "api_base",
+  apiKey: "api_key",
+  modelType: "model_type",
+  litellmId: "litellm_id",
+  // Fields whose JS name == SQL column (listed for documentation purposes)
+  id: "id",
+  name: "name",
+  provider: "provider",
+  description: "description",
+  tags: "tags",
+  enabled: "enabled",
+};
+
+function jsToCol(key) {
+  return JS_TO_COL[key] || key;
+}
+
 // ─── Model CRUD ────────────────────────────────────────────────────────────
 
 function listModels({ enabledOnly = false } = {}) {
@@ -106,32 +137,29 @@ function createModel(model) {
 function updateModel(id, updates) {
   const db = getDb();
 
-  // BUG FIX #5: Guard against empty updates to avoid invalid SQL "SET , updated_at..."
   const keys = Object.keys(updates).filter((k) => k !== "id");
   if (keys.length === 0) return getModel(id);
 
-  // BUG FIX #3: Convert boolean `enabled` → integer for SQLite (better-sqlite3 rejects booleans)
+  // Normalize types for SQLite
   const normalized = { ...updates };
   if (typeof normalized.enabled === "boolean") {
     normalized.enabled = normalized.enabled ? 1 : 0;
   }
+  if (normalized.tags && Array.isArray(normalized.tags)) {
+    normalized.tags = JSON.stringify(normalized.tags);
+  }
 
+  // BUG FIX #5: Use the declarative JS_TO_COL map instead of an inline
+  // ternary chain.  Each SET clause: `sql_col = @jsKey` so that
+  // better-sqlite3's named binding (@jsKey) finds the value in `normalized`.
   const fields = keys
-    .map((k) => {
-      const col = k === "displayName" ? "display_name"
-        : k === "litellmModel" ? "litellm_model"
-        : k === "apiBase" ? "api_base"
-        : k === "apiKey" ? "api_key"
-        : k === "modelType" ? "model_type"
-        : k === "litellmId" ? "litellm_id"
-        : k;
-      return `${col} = @${k}`;
-    })
+    .map((k) => `${jsToCol(k)} = @${k}`)
     .join(", ");
 
   db.prepare(
     `UPDATE models SET ${fields}, updated_at = datetime('now') WHERE id = @id`
   ).run({ id, ...normalized });
+
   return getModel(id);
 }
 

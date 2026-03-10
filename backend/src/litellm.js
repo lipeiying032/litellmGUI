@@ -48,7 +48,12 @@ async function registerModel(model) {
 
 /**
  * Remove a model from LiteLLM.
- * @param {string} litellmId  - LiteLLM's model ID
+ * @param {string} litellmId  - LiteLLM's model ID (returned from registerModel)
+ *
+ * NOTE (Bug #13): The /model/delete request body field name has varied across
+ * LiteLLM versions. Current versions expect { id: litellmId }.
+ * If deletion silently fails after a LiteLLM upgrade, verify the field name
+ * against the running version's Swagger at http://<litellm-host>:4000/docs.
  */
 async function deregisterModel(litellmId) {
   if (!litellmId) return;
@@ -81,10 +86,19 @@ async function updateModel(oldLitellmId, model) {
 }
 
 /**
- * Check LiteLLM health.
+ * Check LiteLLM liveness.
+ *
+ * BUG FIX #2: Was using GET /health which checks all registered model upstreams.
+ * If any upstream is unreachable, /health returns an error even though LiteLLM
+ * itself is running fine — causing syncModelsToLitellmWithRetry() to keep
+ * retrying unnecessarily and eventually give up.
+ *
+ * /health/liveliness only checks that the LiteLLM process is alive, which is
+ * the correct signal for "is LiteLLM ready to accept /model/new requests?".
+ * This matches what docker-compose.yml uses for the container healthcheck.
  */
 async function healthCheck() {
-  const response = await client.get("/health");
+  const response = await client.get("/health/liveliness");
   return response.data;
 }
 
@@ -93,7 +107,6 @@ async function healthCheck() {
  */
 async function testModel(modelName, options = {}) {
   const start = Date.now();
-  // BUG FIX: Use provided messages array if available, otherwise fall back to single prompt
   const messages = options.messages && options.messages.length > 0
     ? options.messages
     : [{ role: "user", content: options.prompt || "Say 'OK' in one word." }];
