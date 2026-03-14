@@ -2,14 +2,14 @@
 title: AI Gateway Hub
 emoji: 🚀
 colorFrom: green
-colorTo: cyan
+colorTo: blue
 sdk: docker
 app_port: 7860
 pinned: false
 license: mit
-short_description: Universal AI API Gateway — any provider → OpenAI-compatible endpoint
+short_description: Universal AI Gateway — any provider to OpenAI API
 ---
- 
+
 # 🚀 AI Gateway Hub
 
 > **Universal AI API Gateway** — Register any AI provider (OpenAI, Anthropic, Ollama, Gemini, Groq, and 100+ more) and get a single OpenAI-compatible endpoint. Powered by [LiteLLM](https://litellm.ai).
