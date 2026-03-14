@@ -1,6 +1,6 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
-
+ 
 ARG VITE_API_BASE=/api
 ARG VITE_APP_NAME="AI Gateway Hub"
 
