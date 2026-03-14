@@ -24,7 +24,7 @@
 # Bug fixes applied:
 #   [Bug2] Added build-essential so better-sqlite3 can compile via node-gyp
 #          if the prebuilt binary download fails.
-#   [Bug3] Changed `npm ci --only=production` → `npm ci --omit=dev`
+#   [Bug3] Changed `npm ci --only=production` → `npm install --omit=dev`
 #          (--only=production is deprecated since npm v7; Node 20 ships npm v10).
 #   [Bug5] LiteLLM pip version extracted to ARG LITELLM_VERSION so it stays
 #          in sync with docker-compose.yml without touching two separate lines.
@@ -43,7 +43,7 @@ ENV VITE_API_BASE=$VITE_API_BASE \
 
 # Layer-cache package install separately from source copy
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm install
 
 COPY frontend/ .
 RUN npm run build
@@ -115,9 +115,9 @@ COPY --chown=user:user backend/package*.json /app/backend/
 
 # FIX [Bug3]: --only=production is deprecated since npm v7 and broken in npm v10
 # (Node 20). The correct flag is --omit=dev.
-# We run npm ci as root so node-gyp can write to system temp dirs during native
+# We run npm install as root so node-gyp can write to system temp dirs during native
 # addon compilation (better-sqlite3), then hand ownership to the user.
-RUN cd /app/backend && npm ci --omit=dev && chown -R user:user /app/backend/node_modules
+RUN cd /app/backend && npm install --omit=dev && chown -R user:user /app/backend/node_modules
 
 COPY --chown=user:user backend/src/ /app/backend/src/
 
