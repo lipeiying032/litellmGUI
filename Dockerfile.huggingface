@@ -55,7 +55,7 @@ FROM python:3.11-slim
 # docker-compose.yml: ghcr.io/berriai/litellm:main-v1.81.14-stable
 #                     → PyPI package:        litellm==1.81.14
 # To upgrade: change both this ARG and the docker-compose image tag together.
-ARG LITELLM_VERSION=1.81.14
+ARG LITELLM_VERSION=1.50.4
 
 # ── System deps ───────────────────────────────────────────────────────────────
 # build-essential (make + g++) is required as a fallback compilation path for
