@@ -9,7 +9,7 @@ pinned: false
 license: mit
 short_description: Universal AI API Gateway — any provider → OpenAI-compatible endpoint
 ---
-
+ 
 # 🚀 AI Gateway Hub
 
 > **Universal AI API Gateway** — Register any AI provider (OpenAI, Anthropic, Ollama, Gemini, Groq, and 100+ more) and get a single OpenAI-compatible endpoint. Powered by [LiteLLM](https://litellm.ai).
