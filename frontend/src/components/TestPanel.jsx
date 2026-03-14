@@ -44,7 +44,6 @@ export default function TestPanel() {
     setResponse(null);
     const start = Date.now();
     try {
-      // BUG FIX: was only sending the last message. Now sends the full conversation array.
       const res = await api.testModel(selectedId, validMessages);
       setResponse({ ...res.data, _latency: Date.now() - start });
     } catch (e) {
@@ -227,15 +226,19 @@ console.log(response.choices[0].message.content);`
                     <div className="space-y-3">
                       <div className="p-3 bg-surface-2 rounded-lg">
                         <p className="text-text-primary text-sm leading-relaxed whitespace-pre-wrap">
-                          {response.choices?.[0]?.message?.content || "No content in response"}
+                          {/* FIX: response state shape is { success, latencyMs, response: <LiteLLM data>, _latency }
+                               The actual LiteLLM chat completion object lives at response.response,
+                               not at the top level. Previously accessed response.choices which was
+                               always undefined, causing "No content in response" on every call. */}
+                          {response.response?.choices?.[0]?.message?.content || "No content in response"}
                         </p>
                       </div>
-                      {response.usage && (
+                      {response.response?.usage && (
                         <div className="flex gap-4 text-xs text-text-muted font-mono">
-                          <span>in: {response.usage.prompt_tokens}</span>
-                          <span>out: {response.usage.completion_tokens}</span>
-                          <span>total: {response.usage.total_tokens}</span>
-                          <span>model: {response.model}</span>
+                          <span>in: {response.response.usage.prompt_tokens}</span>
+                          <span>out: {response.response.usage.completion_tokens}</span>
+                          <span>total: {response.response.usage.total_tokens}</span>
+                          <span>model: {response.response.model}</span>
                         </div>
                       )}
                     </div>
