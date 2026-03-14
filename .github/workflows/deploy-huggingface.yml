@@ -171,29 +171,23 @@ jobs:
           SECRETS_API="https://huggingface.co/api/spaces/${HF_USERNAME}/${HF_SPACE_NAME}/secrets"
 
           # Fetch the list of existing secret keys (returns JSON array of {key, …})
+          # Use grep to check for GATEWAY_PUBLIC_URL — avoids embedding Python with
+          # single quotes inside a YAML block (causes YAML parse error on line ~181).
           SECRETS_JSON=$(curl -s \
             -H "Authorization: Bearer ${HF_TOKEN}" \
             "${SECRETS_API}" || echo "[]")
 
           # Check whether GATEWAY_PUBLIC_URL is already present
-          ALREADY_SET=$(echo "${SECRETS_JSON}" | \
-            python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    keys = [s.get('key','') for s in data] if isinstance(data, list) else []
-    print('yes' if 'GATEWAY_PUBLIC_URL' in keys else 'no')
-except Exception:
-    print('unknown')
-")
-
-          if [ "${ALREADY_SET}" = "yes" ]; then
+          # The HF API returns: [{"key":"NAME","description":"","isPrimary":false}, ...]
+          # so grep for the key name as a JSON string value.
+          if echo "${SECRETS_JSON}" | grep -q '"GATEWAY_PUBLIC_URL"'; then
             echo "ℹ️  GATEWAY_PUBLIC_URL already set — skipping (preserving user-configured value)."
             exit 0
           fi
 
-          if [ "${ALREADY_SET}" = "unknown" ]; then
-            echo "⚠️  Could not parse HF Secrets API response — set GATEWAY_PUBLIC_URL manually."
+          # If the response is not a JSON array at all (API error / auth failure), skip silently
+          if ! echo "${SECRETS_JSON}" | grep -q '^\['; then
+            echo "⚠️  Could not reach HF Secrets API — set GATEWAY_PUBLIC_URL manually."
             exit 0
           fi
 
