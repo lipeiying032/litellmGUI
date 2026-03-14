@@ -1,0 +1,266 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Deploy AI Gateway Hub → Hugging Face Spaces
+#
+# REQUIRED SETUP (do once before first run):
+#
+#   1. Create the HF Space manually at https://huggingface.co/new-space
+#      Name:  <anything>   SDK: Docker   Hardware: CPU Basic (free)
+#
+#   2. Add GitHub Repository Secrets  (Settings → Secrets → Actions):
+#      HF_TOKEN       — HF access token with WRITE scope
+#                       https://huggingface.co/settings/tokens
+#
+#   3. Add GitHub Repository Variables  (Settings → Variables → Actions):
+#      HF_USERNAME    — Your HF username or org name (e.g. "myname")
+#      HF_SPACE_NAME  — The Space name you chose    (e.g. "ai-gateway-hub")
+#
+#   4. (Optional) Set these secrets in your HF Space UI
+#      (Space → Settings → Repository secrets):
+#      LITELLM_MASTER_KEY  — Strong random string, e.g. "sk-gateway-xxxx"
+#      JWT_SECRET          — Strong random string
+#      GATEWAY_PUBLIC_URL  — https://<HF_USERNAME>-<HF_SPACE_NAME>.hf.space
+#                            (the workflow will set this automatically on first
+#                             deploy if the secret does not already exist)
+#      OPENAI_API_KEY      — (if using OpenAI models)
+#      ANTHROPIC_API_KEY   — (if using Anthropic models)
+#      … any other provider keys
+#
+# HOW IT WORKS:
+#   On every push to main (or manual trigger), this workflow:
+#     1. Clones your HF Space git repository
+#     2. Syncs the project source into it
+#     3. Promotes Dockerfile.huggingface → Dockerfile
+#     4. Promotes huggingface/README.md → README.md (HF frontmatter)
+#     5. Commits and pushes — HF Spaces rebuilds the Docker image automatically
+#
+# Bug fixes applied:
+#   [Bug4] Step 6 now reads the list of existing secret keys before writing,
+#          and only sets GATEWAY_PUBLIC_URL when the key does NOT already exist.
+#   [Bug6] Commit message now uses git log against $GITHUB_WORKSPACE (the
+#          SOURCE repo), not against the hf-space clone directory. The previous
+#          fix still read from the wrong repo because `cd ./hf-space` happens at
+#          the top of the run block — every subsequent command (including git log)
+#          ran inside the HF Space clone, producing the PREVIOUS deploy's message
+#          rather than the triggering commit's message.
+#   [Bug7] Removed dead `-not -path './.git/*'` condition from find.
+#   [BugB] Same as Bug6 — git log -1 was reading from ./hf-space instead of
+#          the source repo. Fixed by saving HEAD_MSG BEFORE cd ./hf-space.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: 🚀 Deploy to Hugging Face Spaces
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force push even when no source changes are detected"
+        type: boolean
+        default: false
+
+concurrency:
+  group: hf-deploy
+  cancel-in-progress: true   # only one deploy at a time; cancel stale runs
+
+jobs:
+  deploy:
+    name: Sync to HF Spaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── 2. Validate config ─────────────────────────────────────────────────
+      - name: Validate required secrets and variables
+        run: |
+          MISSING=()
+          [ -z "${{ secrets.HF_TOKEN }}"       ] && MISSING+=("secret: HF_TOKEN")
+          [ -z "${{ vars.HF_USERNAME }}"        ] && MISSING+=("variable: HF_USERNAME")
+          [ -z "${{ vars.HF_SPACE_NAME }}"      ] && MISSING+=("variable: HF_SPACE_NAME")
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::Missing GitHub configuration:"
+            for item in "${MISSING[@]}"; do
+              echo "::error::  → $item"
+            done
+            echo "::error::See the workflow file header for setup instructions."
+            exit 1
+          fi
+
+          echo "HF_USERNAME=${{ vars.HF_USERNAME }}"     >> "$GITHUB_ENV"
+          echo "HF_SPACE_NAME=${{ vars.HF_SPACE_NAME }}" >> "$GITHUB_ENV"
+          SPACE_URL="https://${{ vars.HF_USERNAME }}-${{ vars.HF_SPACE_NAME }}.hf.space"
+          echo "HF_SPACE_URL=${SPACE_URL}" >> "$GITHUB_ENV"
+          echo "Space URL: ${SPACE_URL}"
+
+      # ── 3. Configure Git ────────────────────────────────────────────────────
+      - name: Configure Git identity
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name  "github-actions[bot]"
+          git config --global --add safe.directory '*'
+
+      # ── 4. Clone HF Space repo ─────────────────────────────────────────────
+      - name: Clone HF Space repository
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          HF_REPO="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}"
+
+          echo "Cloning https://huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME} …"
+          if ! git clone "${HF_REPO}" ./hf-space --quiet 2>&1; then
+            echo "::error::Failed to clone the HF Space repository."
+            echo "::error::Make sure you have:"
+            echo "::error::  1. Created the Space at https://huggingface.co/new-space  (SDK: Docker)"
+            echo "::error::  2. Set HF_TOKEN with WRITE access"
+            echo "::error::  3. HF_USERNAME and HF_SPACE_NAME match the Space you created"
+            exit 1
+          fi
+
+          cd ./hf-space
+          git remote set-url origin "${HF_REPO}"
+
+      # ── 5. Prepare deployment directory ────────────────────────────────────
+      - name: Prepare deployment payload
+        run: |
+          # Wipe everything inside the clone except .git
+          find ./hf-space -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          # Sync source files → HF Space (exclude dev/local-only artifacts)
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='*/node_modules' \
+            --exclude='frontend/dist' \
+            --exclude='frontend/.vite' \
+            --exclude='backend/data' \
+            --exclude='data' \
+            --exclude='*.db' \
+            --exclude='*.db-shm' \
+            --exclude='*.db-wal' \
+            --exclude='.env' \
+            --exclude='.env.local' \
+            --exclude='nginx/ssl' \
+            --exclude='logs' \
+            --exclude='*.log' \
+            ./ ./hf-space/
+
+          # ── Promote HF-specific files to root positions ───────────────────
+          cp ./hf-space/Dockerfile.huggingface ./hf-space/Dockerfile
+          cp ./hf-space/huggingface/README.md  ./hf-space/README.md
+
+          echo "=== Files staged for deployment ==="
+          find ./hf-space -not -path './hf-space/.git/*' | sort
+
+      # ── 6. Auto-set GATEWAY_PUBLIC_URL in HF Space secrets (first deploy only) ─
+      #
+      # FIX [Bug4]: Previously overwrote GATEWAY_PUBLIC_URL on every deploy.
+      # Now: fetch existing secret keys list, only set if not already present.
+      - name: Auto-configure GATEWAY_PUBLIC_URL Space secret (first deploy only)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          SECRETS_API="https://huggingface.co/api/spaces/${HF_USERNAME}/${HF_SPACE_NAME}/secrets"
+
+          # Fetch the list of existing secret keys (returns JSON array of {key, …})
+          SECRETS_JSON=$(curl -s \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            "${SECRETS_API}" || echo "[]")
+
+          # Check whether GATEWAY_PUBLIC_URL is already present
+          ALREADY_SET=$(echo "${SECRETS_JSON}" | \
+            python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    keys = [s.get('key','') for s in data] if isinstance(data, list) else []
+    print('yes' if 'GATEWAY_PUBLIC_URL' in keys else 'no')
+except Exception:
+    print('unknown')
+")
+
+          if [ "${ALREADY_SET}" = "yes" ]; then
+            echo "ℹ️  GATEWAY_PUBLIC_URL already set — skipping (preserving user-configured value)."
+            exit 0
+          fi
+
+          if [ "${ALREADY_SET}" = "unknown" ]; then
+            echo "⚠️  Could not parse HF Secrets API response — set GATEWAY_PUBLIC_URL manually."
+            exit 0
+          fi
+
+          # Key does not exist yet — set it for the first time
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${SECRETS_API}" \
+            -H "Authorization: Bearer ${HF_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"key\":\"GATEWAY_PUBLIC_URL\",\"value\":\"${HF_SPACE_URL}\"}")
+
+          if [ "$HTTP" -eq 200 ] || [ "$HTTP" -eq 201 ]; then
+            echo "✅ GATEWAY_PUBLIC_URL set to ${HF_SPACE_URL}"
+          else
+            echo "⚠️  Could not set GATEWAY_PUBLIC_URL (HTTP ${HTTP}) — set it manually in Space settings."
+          fi
+
+      # ── 7. Commit and push ─────────────────────────────────────────────────
+      - name: Commit and push to HF Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FORCE: ${{ github.event.inputs.force_rebuild }}
+        run: |
+          # FIX [BugB]: Read the commit message from the SOURCE repo BEFORE
+          # changing into ./hf-space. Every command after `cd ./hf-space` runs
+          # inside the HF Space clone — git log there returns the PREVIOUS
+          # deploy's message, not the current triggering commit's message,
+          # causing each deploy's commit to say the previous one's message.
+          #
+          # $GITHUB_WORKSPACE is always the source repo checkout root.
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          HEAD_MSG=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%s 2>/dev/null || echo "manual trigger")
+
+          cd ./hf-space
+          git add -A
+
+          if git diff --cached --quiet && [ "${FORCE}" != "true" ]; then
+            echo "ℹ️  No changes detected — skipping deploy."
+            echo "    (Use 'Force rebuild' in workflow_dispatch to push anyway.)"
+            exit 0
+          fi
+
+          COMMIT_MSG="deploy: ${SHORT_SHA} — ${HEAD_MSG}"
+          # Keep to one clean line, cap at 120 chars
+          COMMIT_MSG=$(echo "${COMMIT_MSG}" | head -1 | cut -c1-120)
+
+          git commit -m "${COMMIT_MSG}" --allow-empty  # --allow-empty covers force rebuild
+          git push origin main
+
+          echo ""
+          echo "✅ Deployment pushed!"
+          echo "   Space URL  : ${HF_SPACE_URL}"
+          echo "   Build logs : https://huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}/logs"
+          echo ""
+          echo "   HF Spaces will now build the Docker image."
+          echo "   First build takes ~5 min; subsequent builds are faster."
+
+      # ── 8. Job summary ─────────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## 🚀 HF Spaces Deployment
+
+          | Field        | Value |
+          |---|---|
+          | Space        | [\`${HF_USERNAME}/${HF_SPACE_NAME}\`](https://huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}) |
+          | App URL      | [${HF_SPACE_URL}](${HF_SPACE_URL}) |
+          | Commit       | \`$(echo "${{ github.sha }}" | cut -c1-7)\` |
+          | Build logs   | [View logs](https://huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}/logs) |
+          EOF
