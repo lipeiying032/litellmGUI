@@ -10,7 +10,7 @@ body: body ? JSON.stringify(body) : undefined,
 });
 } catch (networkErr) {
 // fetch() itself failed (no network, CORS, etc.)
-throw new Error(“Network error — check your connection and try again.”);
+throw new Error(“Network error – check your connection and try again.”);
 }
 
 // Try to parse JSON. If the server returns an HTML error page (e.g. nginx
@@ -21,16 +21,16 @@ let data;
 try {
 data = await res.json();
 } catch (_parseErr) {
-// Non-JSON response — likely nginx gateway error or service not ready yet
+// Non-JSON response – likely nginx gateway error or service not ready yet
 if (res.status === 502 || res.status === 503 || res.status === 504) {
 throw new Error(
 `Service unavailable (HTTP ${res.status}). ` +
-“The gateway may still be starting up — please wait 1–2 minutes and try again.”
+“The gateway may still be starting up – please wait 1-2 minutes and try again.”
 );
 }
 throw new Error(
 `Unexpected response from server (HTTP ${res.status}). ` +
-“The service may still be starting up — please try again shortly.”
+“The service may still be starting up – please try again shortly.”
 );
 }
 
