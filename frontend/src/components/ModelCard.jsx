@@ -42,7 +42,6 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
     <div className={`card flex flex-col animate-slide-in transition-all duration-200 ${
       model.enabled ? "" : "opacity-50"
     }`}>
-      {/* ── Card header ── */}
       <div className="p-4 flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
@@ -82,7 +81,6 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
 
       <hr className="divider" />
 
-      {/* ── Endpoint info ── */}
       <div className="p-4 space-y-2">
         <InfoRow
           icon={Globe}
@@ -112,12 +110,11 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
         <InfoRow
           icon={Key}
           label="API Key"
-          value={model.apiKey ? "Configured ✓" : "Not required / None"}
+          value={model.apiKey ? "Configured v" : "Not required / None"}
           className={model.apiKey ? "text-accent-green" : "text-text-muted"}
         />
       </div>
 
-      {/* ── Expandable section ── */}
       <div className="border-t border-white/5">
         <button
           onClick={() => setExpanded(e => !e)}
@@ -130,7 +127,6 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
 
         {expanded && (
           <div className="px-4 pb-4 space-y-3 animate-slide-in">
-            {/* Curl example */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-xs text-text-muted font-mono">curl</span>
@@ -146,7 +142,6 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
               </div>
             </div>
 
-            {/* Test button */}
             <div>
               <button
                 onClick={runTest}
@@ -154,7 +149,7 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
                 className="btn-secondary w-full justify-center text-xs"
               >
                 {testing ? (
-                  <><RefreshCwIcon className="animate-spin" size={12} /> Testing…</>
+                  <><RefreshCwIcon className="animate-spin" size={12} /> Testing...</>
                 ) : "Run connectivity test"}
               </button>
 
@@ -165,8 +160,8 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
                     : "bg-accent-red/5 border-accent-red/20 text-accent-red"
                 }`}>
                   {testResult.success
-                    ? `✓ OK — ${testResult.latencyMs}ms`
-                    : `✗ ${JSON.stringify(testResult.error)?.slice(0, 120)}`
+                    ? "OK -- " + testResult.latencyMs + "ms"
+                    : <ErrorDisplay error={testResult.error} />
                   }
                 </div>
               )}
@@ -174,6 +169,29 @@ export default function ModelCard({ model, onEdit, onDelete, onToggle }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ErrorDisplay({ error }) {
+  const [showFull, setShowFull] = useState(false);
+  const text = typeof error === "string" ? error : JSON.stringify(error, null, 2);
+  const LIMIT = 200;
+  const isLong = text.length > LIMIT;
+
+  return (
+    <div>
+      <span className="whitespace-pre-wrap break-all">
+        {showFull ? text : text.slice(0, LIMIT)}
+      </span>
+      {isLong && (
+        <button
+          onClick={() => setShowFull(v => !v)}
+          className="ml-1 underline text-accent-red/70 hover:text-accent-red"
+        >
+          {showFull ? "show less" : "...show full error"}
+        </button>
+      )}
     </div>
   );
 }
@@ -203,7 +221,6 @@ function InfoRow({ icon: Icon, label, value, onCopy, copied, mono, accent, class
   );
 }
 
-// Inline icon to avoid import issues
 function RefreshCwIcon({ size, className }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
