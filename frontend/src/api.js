@@ -1,22 +1,19 @@
 const BASE = "/api";
 
 async function request(method, path, body) {
-  var res;
-  try {
-    res = await fetch(BASE + path, {
-      method: method,
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (networkErr) {
-    throw new Error("Network error. Check your connection and try again.");
-  }
+  const res = await fetch(BASE + path, {
+    method: method,
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
 
-  var data;
+  const text = await res.text();
+
+  let data;
   try {
-    data = await res.json();
-  } catch (parseErr) {
-    throw new Error("Server returned non-JSON response (HTTP " + res.status + "). Please try again.");
+    data = JSON.parse(text);
+  } catch (e) {
+    throw new Error("HTTP " + res.status + " -- server returned: " + text.slice(0, 200));
   }
 
   if (!data.success) throw new Error(data.error || "Request failed");
