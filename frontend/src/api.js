@@ -1,14 +1,10 @@
-// VITE_API_BASE is always /api in both Docker Compose and HF Spaces.
-// Avoid import.meta.env here to prevent vite:define esbuild transform errors.
-const BASE = (typeof import.meta !== ‘undefined’ && import.meta.env && import.meta.env.VITE_API_BASE)
-? import.meta.env.VITE_API_BASE
-: ‘/api’;
+const BASE = ‘/api’;
 
 async function request(method, path, body) {
 let res;
 try {
-res = await fetch(`${BASE}${path}`, {
-method,
+res = await fetch(BASE + path, {
+method: method,
 headers: { ‘Content-Type’: ‘application/json’ },
 body: body ? JSON.stringify(body) : undefined,
 });
@@ -21,14 +17,9 @@ try {
 data = await res.json();
 } catch (_parseErr) {
 if (res.status === 502 || res.status === 503 || res.status === 504) {
-throw new Error(
-’Service unavailable (HTTP ’ + res.status + ’). ’ +
-‘The gateway may still be starting – please wait 1-2 minutes and try again.’
-);
+throw new Error(’Service unavailable (HTTP ’ + res.status + ‘). Please wait and try again.’);
 }
-throw new Error(
-’Unexpected server response (HTTP ’ + res.status + ‘). Please try again shortly.’
-);
+throw new Error(’Unexpected server response (HTTP ’ + res.status + ‘). Please try again.’);
 }
 
 if (!data.success) throw new Error(data.error || ‘Request failed’);
@@ -36,17 +27,19 @@ return data;
 }
 
 export const api = {
-listModels: () => request(‘GET’, ‘/models’),
-getModel: (id) => request(‘GET’, `/models/${id}`),
-createModel: (body) => request(‘POST’, ‘/models’, body),
-updateModel: (id, body) => request(‘PATCH’, `/models/${id}`, body),
-deleteModel: (id) => request(‘DELETE’, `/models/${id}`),
-testModel: (id, messages) => request(‘POST’, `/models/${id}/test`, {
+listModels: function() { return request(‘GET’, ‘/models’); },
+getModel: function(id) { return request(‘GET’, ‘/models/’ + id); },
+createModel: function(body) { return request(‘POST’, ‘/models’, body); },
+updateModel: function(id, body) { return request(‘PATCH’, ‘/models/’ + id, body); },
+deleteModel: function(id) { return request(‘DELETE’, ‘/models/’ + id); },
+testModel: function(id, messages) {
+return request(‘POST’, ‘/models/’ + id + ‘/test’, {
 messages: Array.isArray(messages) ? messages : undefined,
 prompt: typeof messages === ‘string’ ? messages : undefined,
-}),
-toggleModel: (id) => request(‘POST’, `/models/${id}/toggle`),
-getStats: () => request(‘GET’, ‘/stats’),
-getHealth: () => request(‘GET’, ‘/health’),
-getProviders: () => request(‘GET’, ‘/providers’),
+});
+},
+toggleModel: function(id) { return request(‘POST’, ‘/models/’ + id + ‘/toggle’); },
+getStats: function() { return request(‘GET’, ‘/stats’); },
+getHealth: function() { return request(‘GET’, ‘/health’); },
+getProviders: function() { return request(‘GET’, ‘/providers’); },
 };
