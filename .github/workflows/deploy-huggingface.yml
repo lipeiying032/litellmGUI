@@ -154,8 +154,24 @@ jobs:
             ./ ./hf-space/
 
           # ── Promote HF-specific files to root positions ───────────────────
+          #
+          # Dockerfile: safe to cp since it is never in Git LFS
           cp ./hf-space/Dockerfile.huggingface ./hf-space/Dockerfile
-          cp ./hf-space/huggingface/README.md  ./hf-space/README.md
+
+          # README.md: decode from base64 to avoid two YAML parsing bugs:
+          #
+          # BUG FIX 1 (LFS): the HF Space README.md may be a Git LFS pointer.
+          # cp just copies our content over the pointer but HF still serves the
+          # old LFS object. Writing a new file bypasses LFS entirely.
+          #
+          # BUG FIX 2 (YAML heredoc): a heredoc with "---" inside run: | is
+          # treated as a YAML document separator by YAML parsers, breaking
+          # workflow validation. python3 -c with "key: value" lines also
+          # triggers YAML simple-key scanner errors.
+          # Base64-encoded content has none of these characters.
+          echo "LS0tCnRpdGxlOiBBSSBHYXRld2F5IEh1YgplbW9qaTog8J+agApjb2xvckZyb206IGdyZWVuCmNvbG9yVG86IGJsdWUKc2RrOiBkb2NrZXIKYXBwX3BvcnQ6IDc4NjAKcGlubmVkOiBmYWxzZQpsaWNlbnNlOiBtaXQKc2hvcnRfZGVzY3JpcHRpb246IFVuaXZlcnNhbCBBSSBHYXRld2F5IC0tIGFueSBwcm92aWRlciB0byBPcGVuQUkgQVBJCi0tLQoKIyBBSSBHYXRld2F5IEh1YgoKVW5pdmVyc2FsIEFJIEFQSSBHYXRld2F5IHBvd2VyZWQgYnkgTGl0ZUxMTS4KCiMjIFJlcXVpcmVkIFNldHVwCgpTcGFjZSBTZXR0aW5ncyAtPiBSZXBvc2l0b3J5IHNlY3JldHM6CgpEQVRBQkFTRV9VUkwgICAgICA9IHBvc3RncmVzcWw6Ly91c2VyOnBhc3NAaG9zdDo1NDMyL2RiICAoRGlyZWN0LCBOT1QgdHJhbnNhY3Rpb24gcG9vbGVyKQpMSVRFTExNX01BU1RFUl9LRVkgPSBzay1nYXRld2F5LXh4eHgKTElURUxMTV9TQUxUX0tFWSAgPSByYW5kb20tc3RyaW5nIChuZXZlciBjaGFuZ2UgYWZ0ZXIgZmlyc3QgdXNlKQpKV1RfU0VDUkVUICAgICAgICA9IHJhbmRvbS1zdHJpbmcKR0FURVdBWV9QVUJMSUNfVVJMID0gaHR0cHM6Ly91c2VybmFtZS1zcGFjZS1uYW1lLmhmLnNwYWNlCgpGcmVlIFBvc3RncmVTUUw6IG5lb24udGVjaCAvIHN1cGFiYXNlLmNvbSAvIHJhaWx3YXkuYXBwCg==" \
+            | base64 -d > ./hf-space/README.md
+          echo "README.md written ($(wc -c < ./hf-space/README.md) bytes)"
 
           echo "=== Files staged for deployment ==="
           find ./hf-space -not -path './hf-space/.git/*' | sort
