@@ -5,7 +5,9 @@ WORKDIR /app
 RUN apk add --no-cache python3 make g++ curl
 
 COPY package*.json ./
-RUN npm ci --only=production
+# BUG FIX: --only=production was deprecated in npm v7 and removed in npm v10
+# (shipped with Node 20).  Use --omit=dev instead.
+RUN npm ci --omit=dev
 
 COPY src/ ./src/
 
