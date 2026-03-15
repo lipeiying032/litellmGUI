@@ -1,138 +1,66 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Dockerfile.huggingface
+# Dockerfile.huggingface - HF Spaces single container
+# LiteLLM v1.81.14 with external PostgreSQL via DATABASE_URL
 #
-# Single-container build for Hugging Face Spaces (Docker SDK).
+# Required HF Space secrets:
+#   DATABASE_URL        postgresql://user:pass@host:5432/db
+#   LITELLM_SALT_KEY    random string, encrypts API keys in DB (never change after first use)
+#   LITELLM_MASTER_KEY  admin key
+#   JWT_SECRET          session secret
 #
-# Architecture inside the container:
-#
-#   ┌──────────────────────────────────────────┐  port 7860 (HF Spaces)
-#   │  nginx                                   │──────────────────────►
-#   │    /          → static frontend files    │
-#   │    /api/*     → localhost:3001 (backend) │
-#   │    /v1/*      → localhost:4000 (litellm) │
-#   └──────────────────────────────────────────┘
-#        │                    │
-#        ▼                    ▼
-#   Node.js backend      LiteLLM proxy
-#   (port 3001)          (port 4000)
-#        │
-#        ▼
-#   SQLite  /app/data/gateway.db
-#
-# All processes are managed by supervisord.
-#
-# Bug fixes applied:
-#   [Bug2] Added build-essential so better-sqlite3 can compile via node-gyp
-#          if the prebuilt binary download fails.
-#   [Bug3] Changed `npm ci --only=production` → `npm install --omit=dev`
-#          (--only=production is deprecated since npm v7; Node 20 ships npm v10).
-#   [Bug5] LiteLLM pip version extracted to ARG LITELLM_VERSION so it stays
-#          in sync with docker-compose.yml without touching two separate lines.
-# ─────────────────────────────────────────────────────────────────────────────
+# Bug fixes:
+#   [Bug2]  build-essential for better-sqlite3 node-gyp fallback
+#   [Bug3]  npm install --omit=dev (--only=production deprecated in npm v10)
+#   [Bug5]  ARG LITELLM_VERSION for single-source versioning
 
-# ── Stage 1: Build React frontend ─────────────────────────────────────────────
 FROM node:20-alpine AS frontend-builder
-
 WORKDIR /build
-
-# Build args match the original frontend/Dockerfile
 ARG VITE_API_BASE=/api
 ARG VITE_APP_NAME="AI Gateway Hub"
-ENV VITE_API_BASE=$VITE_API_BASE \
-    VITE_APP_NAME=$VITE_APP_NAME
-
-# Layer-cache package install separately from source copy
+ENV VITE_API_BASE=$VITE_API_BASE VITE_APP_NAME=$VITE_APP_NAME
 COPY frontend/package*.json ./
 RUN npm install
-
 COPY frontend/ .
 RUN npm run build
 
-# ── Stage 2: Production runtime ───────────────────────────────────────────────
 FROM python:3.11-slim
 
-# ── LiteLLM version — keep in sync with docker-compose.yml image tag ──────────
-# docker-compose.yml: ghcr.io/berriai/litellm:main-v1.81.14-stable
-#                     → PyPI package:        litellm==1.81.14
-# To upgrade: change both this ARG and the docker-compose image tag together.
-ARG LITELLM_VERSION=1.50.4
+ARG LITELLM_VERSION=1.81.14
 
-# ── System deps ───────────────────────────────────────────────────────────────
-# build-essential (make + g++) is required as a fallback compilation path for
-# better-sqlite3. prebuild-install downloads a prebuilt .node binary at npm ci
-# time; if that download fails (version mismatch, network timeout, etc.) the
-# package falls back to compiling from source via node-gyp, which needs make
-# and g++. Without build-essential that fallback path crashes the build.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
-        gnupg \
-        ca-certificates \
-        nginx \
-        supervisor \
-        build-essential \
-    && \
-    # Node.js 20 LTS (backend runtime — frontend is pre-built in Stage 1)
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    # Clean up (gnupg no longer needed after nodesource setup)
-    apt-get purge -y gnupg && \
-    apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/*
+        curl gnupg ca-certificates nginx supervisor build-essential \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get purge -y gnupg && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
-# ── LiteLLM proxy ─────────────────────────────────────────────────────────────
 RUN pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}"
 
-# ── Non-root user (HF Spaces recommendation: uid=1000) ────────────────────────
 RUN useradd -m -u 1000 -s /bin/bash user
 
-# ── Directory layout ──────────────────────────────────────────────────────────
 RUN mkdir -p \
-        /app/frontend/dist \
-        /app/backend/src \
-        /app/litellm \
-        /app/huggingface \
-        /app/data \
+        /app/frontend/dist /app/backend/src /app/litellm \
+        /app/huggingface /app/data \
         /var/log/supervisor \
-        /tmp/nginx/client_body \
-        /tmp/nginx/proxy \
-        /tmp/nginx/fastcgi \
-        /tmp/nginx/uwsgi \
-        /tmp/nginx/scgi \
-    && \
-    # Give nginx writable log/lib dirs when running as uid 1000
-    chown -R user:user \
-        /app \
-        /var/log/supervisor \
-        /var/log/nginx \
-        /var/lib/nginx \
-        /tmp/nginx
+        /tmp/nginx/client_body /tmp/nginx/proxy \
+        /tmp/nginx/fastcgi /tmp/nginx/uwsgi /tmp/nginx/scgi \
+    && chown -R user:user \
+        /app /var/log/supervisor \
+        /var/log/nginx /var/lib/nginx /tmp/nginx
 
-# ── Frontend (pre-built in Stage 1) ───────────────────────────────────────────
 COPY --from=frontend-builder --chown=user:user /build/dist /app/frontend/dist
 
-# ── Backend ───────────────────────────────────────────────────────────────────
 COPY --chown=user:user backend/package*.json /app/backend/
-
-# FIX [Bug3]: --only=production is deprecated since npm v7 and broken in npm v10
-# (Node 20). The correct flag is --omit=dev.
-# We run npm install as root so node-gyp can write to system temp dirs during native
-# addon compilation (better-sqlite3), then hand ownership to the user.
-RUN cd /app/backend && npm install --omit=dev && chown -R user:user /app/backend/node_modules
-
+RUN cd /app/backend && npm install --omit=dev \
+    && chown -R user:user /app/backend/node_modules
 COPY --chown=user:user backend/src/ /app/backend/src/
 
-# ── Configs ───────────────────────────────────────────────────────────────────
 COPY --chown=user:user litellm/config.yaml           /app/litellm/config.yaml
 COPY --chown=user:user huggingface/nginx.conf        /app/huggingface/nginx.conf
 COPY --chown=user:user huggingface/supervisord.conf  /app/huggingface/supervisord.conf
 COPY --chown=user:user huggingface/entrypoint.sh     /app/huggingface/entrypoint.sh
 RUN chmod +x /app/huggingface/entrypoint.sh
 
-# ── Switch to non-root ────────────────────────────────────────────────────────
 USER user
 WORKDIR /app
-
-# HF Spaces listens on 7860 (declared in huggingface/README.md frontmatter)
 EXPOSE 7860
-
 ENTRYPOINT ["/app/huggingface/entrypoint.sh"]
