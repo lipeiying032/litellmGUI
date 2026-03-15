@@ -30,6 +30,7 @@ services:
       - ./litellm/config.yaml:/app/config.yaml:ro
       - litellm_data:/app/data
     environment:
+      - STORE_MODEL_IN_DB=True
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-gateway-master-key}
       - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-}
       - DATABASE_URL=postgresql://litellm:litellm@postgres:5432/litellm
