@@ -1,7 +1,11 @@
 # LiteLLM Gateway Configuration
-# database_url is injected by huggingface/entrypoint.sh at runtime
-# when DATABASE_URL environment variable is set.
-# For docker-compose, DATABASE_URL is passed via environment block in compose file.
+#
+# database_url（可选）：
+#   - HF Spaces 部署：由 huggingface/entrypoint.sh 在运行时注入。
+#   - Docker Compose 部署：在 docker-compose.yml 的 litellm service
+#     environment 块中通过 DATABASE_URL 环境变量传入（已在 compose 文件中配置）。
+#   - 不设置时：LiteLLM 以无数据库模式运行，模型由 backend（SQLite）管理
+#     并在每次启动时通过 /model/new API 重新注册，功能正常。
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
