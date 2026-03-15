@@ -12,15 +12,26 @@
 #   [Bug3]  npm install --omit=dev (--only=production deprecated in npm v10)
 #   [Bug5]  ARG LITELLM_VERSION for single-source versioning
 #   [BugP]  prisma generate — LiteLLM v1.61+ initialises its Prisma client at
-#           lifespan startup whenever database_url is present in config.  The
-#           Prisma CLI (installed as part of litellm[proxy]) requires generated
-#           binary artefacts to exist before the process starts.  Without this
-#           step the container crashes immediately with:
+#           lifespan startup whenever database_url is present in config. The
+#           prisma-client-py package requires the Prisma query-engine binary to
+#           exist before the process starts. Without this step the container
+#           crashes immediately with:
 #             ModuleNotFoundError: No module named 'prisma'
 #             Exception: Unable to find Prisma binaries.
 #                        Please run 'prisma generate' first.
-#           Fix: locate LiteLLM's bundled schema.prisma at build time and run
-#           prisma generate so the engine binaries are baked into the image.
+#
+#           IMPORTANT — cache-dir alignment:
+#           prisma-client-py stores the downloaded query-engine binary in
+#           PRISMA_BINARY_CACHE_DIR (default: ~/.cache/prisma-binaries/).
+#           If we run `prisma generate` as root during the build, binaries land
+#           in /root/.cache/. At runtime the container runs as uid=1000 (user),
+#           which looks in /home/user/.cache/ — a completely different path, so
+#           the binary is never found.
+#
+#           Fix: set PRISMA_BINARY_CACHE_DIR=/app/.prisma (a path under /app
+#           that gets chowned to user:user later in this file). Both the build
+#           step and the runtime process use this same env-var, so the binary is
+#           always found regardless of which uid is active.
 
 FROM node:20-alpine AS frontend-builder
 WORKDIR /build
@@ -36,6 +47,11 @@ FROM python:3.11-slim
 
 ARG LITELLM_VERSION=1.81.14
 
+# Point prisma-client-py at a stable, user-writable cache directory.
+# This env var must be set before `prisma generate` and must persist into the
+# final container so the runtime process finds the binary in the same place.
+ENV PRISMA_BINARY_CACHE_DIR=/app/.prisma
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl gnupg ca-certificates nginx supervisor build-essential \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -43,17 +59,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# BUG FIX [BugP]: Run prisma generate immediately after pip install.
-# LiteLLM[proxy] installs the prisma Python package and CLI, but the Prisma
-# engine binaries are not shipped with the package — they must be generated
-# from the schema.  LiteLLM bundles its own schema at:
-#   <litellm_package_dir>/proxy/schema.prisma
-# We locate it dynamically so the path stays correct across LiteLLM versions.
+# Install LiteLLM and run prisma generate in a single layer (as root, so
+# pip can write to system site-packages). The query-engine binary is written
+# to $PRISMA_BINARY_CACHE_DIR (/app/.prisma) which is later chowned to
+# user:user, making it readable at runtime.
 RUN pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}" \
+    && mkdir -p "${PRISMA_BINARY_CACHE_DIR}" \
     && SCHEMA_PATH=$(python3 -c \
          "import litellm, os; \
           print(os.path.join(os.path.dirname(litellm.__file__), 'proxy', 'schema.prisma'))") \
-    && echo "Running: prisma generate --schema ${SCHEMA_PATH}" \
+    && echo "Running prisma generate --schema ${SCHEMA_PATH}" \
     && prisma generate --schema "${SCHEMA_PATH}"
 
 RUN useradd -m -u 1000 -s /bin/bash user
