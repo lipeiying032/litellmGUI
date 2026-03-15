@@ -1,68 +1,31 @@
-# ─────────────────────────────────────────────────────────────────────────────
 # LiteLLM Gateway Configuration
-# AI Gateway Hub — https://github.com/your-org/ai-gateway-hub
-# ─────────────────────────────────────────────────────────────────────────────
+# database_url is injected by huggingface/entrypoint.sh at runtime
+# when DATABASE_URL environment variable is set.
+# For docker-compose, DATABASE_URL is passed via environment block in compose file.
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
-  # NOTE: store_model_in_db is intentionally disabled.
-  # LiteLLM >= 1.x requires PostgreSQL for this feature; SQLite is NOT supported.
-  # AI Gateway Hub's own backend (Node.js + SQLite) persists model configs and
-  # re-registers them with LiteLLM on startup via POST /model/new.
-  # store_model_in_db: true   ← requires postgres, keep commented out
-
-  # ─── BUG FIX #14: Removed `allow_model_access_groups_on_request: true` ───
-  #
-  # That key is NOT a valid LiteLLM general_settings field. It appears in no
-  # version of the official LiteLLM docs or source code under general_settings.
-  # LiteLLM silently ignores unknown keys in this block (Pydantic extra="ignore"),
-  # so the setting had zero effect — it was pure dead config that could mislead
-  # operators into believing access-group enforcement was active when it was not.
-  #
-  # If you need to restrict which models a virtual key can access, use
-  # LiteLLM's Virtual Keys + model access groups feature instead:
-  #   https://docs.litellm.ai/docs/proxy/virtual_keys
-  # ─────────────────────────────────────────────────────────────────────────
-
 litellm_settings:
-  # Drop unsupported parameters instead of raising errors
   drop_params: true
-  # Return original response on errors
   set_verbose: false
-  # Request timeout in seconds
   request_timeout: 120
-  # Retry configuration
   num_retries: 2
-  # NOTE: max_budget: 0 is intentionally absent — it would block all paid requests.
-  # NOTE: proxy_server_settings block is intentionally absent — it is not a valid
-  #       top-level LiteLLM config key and is silently ignored.
-  #       Callbacks belong here under litellm_settings, e.g.:
-  #         success_callback: ["langfuse"]
-  #         failure_callback: ["langfuse"]
 
 router_settings:
-  # "simple-shuffle" is the correct default for a single-instance deployment.
-  # "usage-based-routing" requires a Redis backend for cross-process TPM/RPM
-  # tracking; this project has no Redis service in docker-compose.yml so that
-  # strategy would fail a Redis connection on every request.
   routing_strategy: "simple-shuffle"
   num_retries: 2
   timeout: 120
   retry_after: 5
 
-# ─── Pre-configured model examples (users can add more via the UI) ───────────
 model_list:
-  # ── Example: Ollama local models (no API key needed) ──────────────────────
   - model_name: ollama/llama3
     litellm_params:
       model: ollama/llama3
       api_base: "http://host.docker.internal:11434"
     model_info:
       description: "Llama 3 via local Ollama (no API key required)"
-      supports_function_calling: true
 
-  # ── Example: OpenAI-compatible custom endpoint ────────────────────────────
   - model_name: custom/my-openai-compatible
     litellm_params:
       model: openai/gpt-3.5-turbo
@@ -70,4 +33,3 @@ model_list:
       api_key: "optional-key-or-empty"
     model_info:
       description: "Custom OpenAI-compatible endpoint example"
-      supports_function_calling: true
