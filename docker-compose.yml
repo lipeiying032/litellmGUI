@@ -1,15 +1,28 @@
 version: "3.9"
 
 services:
+
+  # ─── PostgreSQL ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai_gateway_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - gateway_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ─── LiteLLM Proxy Gateway ───────────────────────────────────────────────
   litellm:
-    # BUG FIX #12: Was "main-latest" which points to the HEAD of the main branch
-    # and pulls in breaking changes on every `docker compose pull`. LiteLLM ships
-    # multiple commits per day; /model/delete field names, config.yaml keys, and
-    # routing behaviour have all changed between minor versions without notice.
-    #
-    # Pin to a specific stable version. To upgrade: review release notes at
-    # https://docs.litellm.ai/release_notes then bump the version and redeploy.
     image: ghcr.io/berriai/litellm:main-v1.81.14-stable
     container_name: ai_gateway_litellm
     restart: unless-stopped
@@ -18,25 +31,17 @@ services:
       - litellm_data:/app/data
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-gateway-master-key}
-      # BUG FIX: Added LITELLM_SALT_KEY. If DATABASE_URL is ever configured,
-      # LiteLLM uses this key to encrypt provider API keys at rest in the DB.
-      # Without it, stored keys are written as plaintext.
-      # Set a random value in .env and NEVER change it after first use —
-      # changing it makes all previously stored encrypted keys unreadable.
       - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-}
-      # Optional: set DATABASE_URL in .env for model persistence across restarts.
-      # Must be a PostgreSQL direct connection URL (port 5432, not pooler port 6432).
-      # Example: DATABASE_URL=postgresql://user:pass@host:5432/dbname?sslmode=require
-      # Leave blank (default) to run without a database — models are re-registered
-      # from SQLite on each backend startup via the /model/new API.
-      - DATABASE_URL=${DATABASE_URL:-}
+      - DATABASE_URL=postgresql://litellm:litellm@postgres:5432/litellm
       - PORT=4000
     command: >
       --config /app/config.yaml
       --port 4000
-      --num_workers 4
+      --num_workers 2
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
-      # LiteLLM image has no curl (GitHub issue #9295). Use wget + /health/liveliness.
       test: ["CMD-SHELL", "wget --quiet --tries=1 -O /dev/null http://localhost:4000/health/liveliness || exit 1"]
       interval: 30s
       timeout: 10s
@@ -103,18 +108,9 @@ services:
     restart: unless-stopped
     ports:
       - "${HTTP_PORT:-80}:80"
-      # To enable HTTPS: add certs to nginx/ssl/ and uncomment below
-      # - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - nginx_logs:/var/log/nginx
-    # BUG FIX: Previously used plain depends_on (only waits for container to
-    # exist, not for services to be healthy). LiteLLM needs ~60s to initialise;
-    # nginx starting too early forwards /v1/ requests to a not-yet-ready
-    # upstream and returns 502 to users for the entire startup window.
-    # Fix: require both backend and frontend to pass their healthchecks before
-    # nginx starts. LiteLLM health is already transitively guaranteed because
-    # backend depends_on litellm with condition: service_healthy.
     depends_on:
       backend:
         condition: service_healthy
@@ -124,6 +120,7 @@ services:
       - gateway_net
 
 volumes:
+  postgres_data:
   litellm_data:
   backend_data:
   nginx_logs:
