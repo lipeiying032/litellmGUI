@@ -11,6 +11,16 @@
 #   [Bug2]  build-essential for better-sqlite3 node-gyp fallback
 #   [Bug3]  npm install --omit=dev (--only=production deprecated in npm v10)
 #   [Bug5]  ARG LITELLM_VERSION for single-source versioning
+#   [BugP]  prisma generate — LiteLLM v1.61+ initialises its Prisma client at
+#           lifespan startup whenever database_url is present in config.  The
+#           Prisma CLI (installed as part of litellm[proxy]) requires generated
+#           binary artefacts to exist before the process starts.  Without this
+#           step the container crashes immediately with:
+#             ModuleNotFoundError: No module named 'prisma'
+#             Exception: Unable to find Prisma binaries.
+#                        Please run 'prisma generate' first.
+#           Fix: locate LiteLLM's bundled schema.prisma at build time and run
+#           prisma generate so the engine binaries are baked into the image.
 
 FROM node:20-alpine AS frontend-builder
 WORKDIR /build
@@ -33,7 +43,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}"
+# BUG FIX [BugP]: Run prisma generate immediately after pip install.
+# LiteLLM[proxy] installs the prisma Python package and CLI, but the Prisma
+# engine binaries are not shipped with the package — they must be generated
+# from the schema.  LiteLLM bundles its own schema at:
+#   <litellm_package_dir>/proxy/schema.prisma
+# We locate it dynamically so the path stays correct across LiteLLM versions.
+RUN pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}" \
+    && SCHEMA_PATH=$(python3 -c \
+         "import litellm, os; \
+          print(os.path.join(os.path.dirname(litellm.__file__), 'proxy', 'schema.prisma'))") \
+    && echo "Running: prisma generate --schema ${SCHEMA_PATH}" \
+    && prisma generate --schema "${SCHEMA_PATH}"
 
 RUN useradd -m -u 1000 -s /bin/bash user
 
